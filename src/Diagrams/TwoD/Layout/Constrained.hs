@@ -1,3 +1,4 @@
+{-# LANGUAGE Rank2Types      #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns    #-}
 
@@ -16,8 +17,10 @@ module Diagrams.TwoD.Layout.Constrained where
 
 import           Control.Lens
 import           Control.Monad.State
+import           Data.Functor         ((<$>))
 import           Data.Hashable
 import qualified Data.Map             as M
+import           Data.Maybe           (fromJust)
 
 import           Math.MFSolve
 
@@ -27,83 +30,113 @@ import           Diagrams.TwoD        (P2, V2, unitX, unitY, unit_X, unit_Y)
 import           Linear.Affine
 import           Linear.Vector
 
-type Handle = Int
+type System v n = Dependencies v n -> Either (DepError n) (Dependencies v n)
 
-type System n = Dependencies SimpleVar n -> Either (DepError n) (Dependencies SimpleVar n)
+-- XXX change name 'Handle' to something better
 
-data ConstrainedState b v n m = ConstrainedState
-  { _varCounter :: Int
-  , _equations  :: System n
-  , _diagrams   :: M.Map Handle (QDiagram b v n m, Bool)
+-- Don't export Handle constructor.  The only way you can get a Handle is from
+-- intro, so we can guarantee that Handles are always valid
+newtype Handle s = Handle Int
+  deriving (Ord, Eq, Show)
+
+data XY = X | Y
+  deriving (Eq, Ord, Read, Show)
+data DiaVar s = DiaVar (Handle s) String XY
+
+diaVar2String :: DiaVar s -> String
+diaVar2String (DiaVar h s xy) = show h ++ "_" ++ s ++ "_" ++ show xy
+
+diaVar :: Handle s -> String -> XY -> DiaVar s
+diaVar = DiaVar
+
+mkDiaVar :: Handle s -> String -> XY -> Expr (DiaVar s) Double
+mkDiaVar h s xy = makeVariable (diaVar h s xy)
+
+mkDiaPVar :: Handle s -> String -> P2 (Expr (DiaVar s) Double)
+mkDiaPVar h s = mkDiaVar h s X ^& mkDiaVar h s Y
+
+-- s is a phantom parameter, used like with ST
+data ConstrainedState s b n m = ConstrainedState
+  { _equations     :: System (DiaVar s) n
+  , _handleCounter :: Int
+  , _varCounter    :: Int
+  , _diagrams      :: M.Map (Handle s) (QDiagram b V2 n m)   -- XXX later add Bool for scalable
   }
 
 makeLenses ''ConstrainedState
 
-type Constrained b v n m a = State (ConstrainedState b v n m) a
+type Constrained s b n m a = State (ConstrainedState s b n m) a
 
-vertDirs :: Num n => [(String, V2 n)]
-vertDirs  = [ ("t", unitY),  ("b", unit_Y) ]
-horizDirs = [ ("l", unit_X), ("r", unitX)  ]
-dirs = horizDirs ++ vertDirs ++
-     [ (cv++ch, vv ^+^ vh)
-     | (cv,vv) <- vertDirs, (ch,vh) <- horizDirs
-     ]
-
-mkSystem :: [System n] -> System n
+mkSystem :: [System v n] -> System v n
 mkSystem = flip solveEqs
+
+constrain :: System (DiaVar s) n -> Constrained s b n m ()
+constrain sys' =
+  equations %= mkSystem . (\sys -> [sys,sys'])
 
 -- (=.=) :: (Hashable n, RealFrac (Phase n))
 --       => P2 (Expr SimpleVar n) -> P2 (Expr SimpleVar n) -> System n
 -- can't use the above since Phase is not exported by mfsolve
 
 infix 4 =.=
-(=.=) :: P2 (Expr SimpleVar Double) -> P2 (Expr SimpleVar Double) -> System Double
+(=.=)
+  :: (Hashable v, Ord v)
+  => P2 (Expr v Double) -> P2 (Expr v Double) -> System v Double
 (coords -> px :& py) =.= (coords -> qx :& qy) = mkSystem [ px === qx, py === qy ]
 
-intro :: QDiagram b v Double m -> Constrained b v Double m Handle
+intro :: QDiagram b V2 Double m -> Constrained s b Double m (Handle s)
 intro dia = do
-  v <- varCounter <+= 1
-  diagrams %= (\m -> m & at v .~ Just (dia, False))
-  forM_ dirs $ \(dirName, dirV) ->
-    constrain $ ccenter v .+^ dirV =.= subpoint dirName v
+  h <- Handle <$> (handleCounter <+= 1)
+  diagrams %= (\m -> m & at h .~ Just dia)
+  return h
 
-  undefined -- for each direction in dirs, look up envelope and set up
-            -- constraint: diagram x/y are fixed distance away from
-            -- the given directional points.
-
-subvar :: String -> Handle -> Expr SimpleVar Double
-subvar s h = makeVariable . SimpleVar $ show h ++ "_" ++ s
-
--- TODO: use a data type for these e.g. var =~ (Handle, Name, XY)
-
-subpoint :: String -> Handle -> P2 (Expr SimpleVar Double)
-subpoint s h = subvar (s ++ "_x") h ^& subvar (s ++ "_y") h
-
-cx :: Handle -> Expr SimpleVar Double
-cx = subvar "center_x"
-
-cy :: Handle -> Expr SimpleVar Double
-cy = subvar "center_y"
-
-ccenter :: Handle -> P2 (Expr SimpleVar Double)
-ccenter h = cx h ^& cy h
-
-intros :: [QDiagram b v Double m] -> Constrained b v Double m [Handle]
+intros :: [QDiagram b V2 Double m] -> Constrained s b Double m [Handle s]
 intros = mapM intro
 
-introScaled :: QDiagram b v n m -> Constrained b v n m Handle
-introScaled = undefined
-  -- like intro, but put (..., True) in the Map, and introduce an
-  -- extra radius variable and use it in constraints between center
-  -- and outer points
+centerAnchor :: Handle s -> Constrained s b n m (P2 (Expr (DiaVar s) Double))
+centerAnchor h = mkDiaPVar h "center"
 
-constrain :: System n -> Constrained b v n m ()
-constrain sys' =
-  equations %= mkSystem . (\sys -> [sys,sys'])
+newAnchor
+  :: Handle s
+  -> (QDiagram b V2 n m -> P2 n)
+  -> Constrained s b n m (P2 (Expr DiaVar n))
+newAnchor h getP = do
+  -- the fromJust is justified, because the type discipline on Handles ensures
+  -- they will always represent a valid index in the Map.
+  dia <- fromJust <$> use (diagrams . at h)
+  let p = getP dia
 
-layout :: Constrained b v n m a -> QDiagram b v n m
+  v <- varCounter <+= 1
+  let anchor = mkDiaPVar h ("a" ++ show v)
+
+  constrain [centerAnchor h .+^ (p .-. origin) =.= anchor]
+
+  return anchor
+
+layout :: (forall s. Constrained s b n m a) -> QDiagram b V2 n m
 layout = undefined
   -- Solve the system, and then for each diagram in the map, look up
   -- its parameters from the solved system (as appropriate for
   -- scaled/not scaled).  Use the origin for anything unconstrained.
   -- Do scales and translates as appropriate, then mconcat everything.
+
+
+
+
+-- introScaled :: QDiagram b V2 n m -> Constrained b n m Handle
+-- introScaled = undefined
+
+  -- like intro, but put (..., True) in the Map, and introduce an
+  -- extra radius variable and use it in constraints between center
+  -- and outer points
+
+
+-- vertDirs :: Num n => [(String, V2 n)]
+-- vertDirs  = [ ("t", unitY),  ("b", unit_Y) ]
+-- horizDirs = [ ("l", unit_X), ("r", unitX)  ]
+-- dirs = horizDirs ++ vertDirs ++
+--      [ (cv++ch, vv ^+^ vh)
+--      | (cv,vv) <- vertDirs, (ch,vh) <- horizDirs
+--      ]
+
+
