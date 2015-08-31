@@ -16,7 +16,7 @@
 
 module Diagrams.TwoD.Layout.Constrained where
 
-import           Control.Lens
+import           Control.Lens         hiding ((#))
 import           Control.Monad.State
 import           Data.Functor         ((<$>))
 import           Data.Hashable
@@ -28,7 +28,7 @@ import           GHC.Generics
 import           Math.MFSolve
 
 import           Diagrams.Coordinates
-import           Diagrams.Prelude     (Monoid (..), Monoid', QDiagram)
+import           Diagrams.Prelude     (Monoid (..), Monoid', QDiagram, translate, (#))
 import           Diagrams.TwoD        (P2, V2, unitX, unitY, unit_X, unit_Y)
 import           Linear.Affine
 import           Linear.Vector
@@ -44,7 +44,7 @@ newtype Handle s = Handle Int
 
 data XY = X | Y
   deriving (Eq, Ord, Read, Show, Generic)
-data DiaVar s = DiaVar (Handle s) String XY
+data DiaVar s = DiaVar (Handle s) String XY  -- XXX some vars might not be associated with a diagram!
   deriving (Eq, Ord, Generic)
 
 instance Hashable (Handle s)
@@ -112,11 +112,11 @@ intros = mapM intro
 centerAnchor :: Handle s -> P2 (Expr (DiaVar s) Double)
 centerAnchor h = mkDiaPVar h "center"
 
-newAnchor
+newAnchorOn
   :: Handle s
   -> (QDiagram b V2 Double m -> P2 Double)
   -> Constrained s b Double m (P2 (Expr (DiaVar s) Double))
-newAnchor h getP = do
+newAnchorOn h getP = do
   -- the fromJust is justified, because the type discipline on Handles ensures
   -- they will always represent a valid index in the Map.
   dia <- fromJust <$> use (diagrams . at h)
@@ -129,15 +129,23 @@ newAnchor h getP = do
 
   return anchor
 
+-- newAnchor :: Constrained s b Double m (P2 (Expr (DiaVar s) Double))
+-- newAnchor = do
+--   v <- varCounter <+= 1
+--   return $
+
 layout
   :: (Monoid' m, Ord n, Floating n)
   => (forall s. Constrained s b n m a)
   -> QDiagram b V2 n m
 layout constr =
   case (s ^. equations) emptyDeps of
-    Left depError -> mempty     -- XXX
+    Left depError -> square 1 # fc red     -- XXX
     Right deps    -> mconcat $
-      map (\(h, dia) -> undefined) dias
+      flip map dias $ \(h, dia) ->
+        case (getKnown deps (diaVar h "center" X), getKnown deps (diaVar h "center" Y)) of
+          (Right xval, Right yval) -> dia # translate (xval ^& yval)
+          _ -> square 1 # fc green
 
   where
     s = execState constr initConstrainedState
