@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric   #-}
 {-# LANGUAGE Rank2Types      #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ViewPatterns    #-}
@@ -19,13 +20,15 @@ import           Control.Lens
 import           Control.Monad.State
 import           Data.Functor         ((<$>))
 import           Data.Hashable
+import           Data.Hashable
 import qualified Data.Map             as M
 import           Data.Maybe           (fromJust)
+import           GHC.Generics
 
 import           Math.MFSolve
 
 import           Diagrams.Coordinates
-import           Diagrams.Prelude     (QDiagram)
+import           Diagrams.Prelude     (Monoid (..), Monoid', QDiagram)
 import           Diagrams.TwoD        (P2, V2, unitX, unitY, unit_X, unit_Y)
 import           Linear.Affine
 import           Linear.Vector
@@ -37,11 +40,16 @@ type System v n = Dependencies v n -> Either (DepError n) (Dependencies v n)
 -- Don't export Handle constructor.  The only way you can get a Handle is from
 -- intro, so we can guarantee that Handles are always valid
 newtype Handle s = Handle Int
-  deriving (Ord, Eq, Show)
+  deriving (Ord, Eq, Show, Generic)
 
 data XY = X | Y
-  deriving (Eq, Ord, Read, Show)
+  deriving (Eq, Ord, Read, Show, Generic)
 data DiaVar s = DiaVar (Handle s) String XY
+  deriving (Eq, Ord, Generic)
+
+instance Hashable (Handle s)
+instance Hashable XY
+instance Hashable (DiaVar s)
 
 diaVar2String :: DiaVar s -> String
 diaVar2String (DiaVar h s xy) = show h ++ "_" ++ s ++ "_" ++ show xy
@@ -65,14 +73,22 @@ data ConstrainedState s b n m = ConstrainedState
 
 makeLenses ''ConstrainedState
 
+initConstrainedState :: ConstrainedState s b n m
+initConstrainedState = ConstrainedState
+  { _equations     = Right
+  , _handleCounter = 0
+  , _varCounter    = 0
+  , _diagrams      = M.empty
+  }
+
 type Constrained s b n m a = State (ConstrainedState s b n m) a
 
 mkSystem :: [System v n] -> System v n
 mkSystem = flip solveEqs
 
-constrain :: System (DiaVar s) n -> Constrained s b n m ()
+constrain :: [System (DiaVar s) n] -> Constrained s b n m ()
 constrain sys' =
-  equations %= mkSystem . (\sys -> [sys,sys'])
+  equations %= mkSystem . (:sys')
 
 -- (=.=) :: (Hashable n, RealFrac (Phase n))
 --       => P2 (Expr SimpleVar n) -> P2 (Expr SimpleVar n) -> System n
@@ -93,13 +109,13 @@ intro dia = do
 intros :: [QDiagram b V2 Double m] -> Constrained s b Double m [Handle s]
 intros = mapM intro
 
-centerAnchor :: Handle s -> Constrained s b n m (P2 (Expr (DiaVar s) Double))
+centerAnchor :: Handle s -> P2 (Expr (DiaVar s) Double)
 centerAnchor h = mkDiaPVar h "center"
 
 newAnchor
   :: Handle s
-  -> (QDiagram b V2 n m -> P2 n)
-  -> Constrained s b n m (P2 (Expr DiaVar n))
+  -> (QDiagram b V2 Double m -> P2 Double)
+  -> Constrained s b Double m (P2 (Expr (DiaVar s) Double))
 newAnchor h getP = do
   -- the fromJust is justified, because the type discipline on Handles ensures
   -- they will always represent a valid index in the Map.
@@ -109,12 +125,24 @@ newAnchor h getP = do
   v <- varCounter <+= 1
   let anchor = mkDiaPVar h ("a" ++ show v)
 
-  constrain [centerAnchor h .+^ (p .-. origin) =.= anchor]
+  constrain [centerAnchor h .+^ (fmap makeConstant (p .-. origin)) =.= anchor]
 
   return anchor
 
-layout :: (forall s. Constrained s b n m a) -> QDiagram b V2 n m
-layout = undefined
+layout
+  :: (Monoid' m, Ord n, Floating n)
+  => (forall s. Constrained s b n m a)
+  -> QDiagram b V2 n m
+layout constr =
+  case (s ^. equations) emptyDeps of
+    Left depError -> mempty     -- XXX
+    Right deps    -> mconcat $
+      map (\(h, dia) -> undefined) dias
+
+  where
+    s = execState constr initConstrainedState
+    dias = M.assocs (s ^. diagrams)
+
   -- Solve the system, and then for each diagram in the map, look up
   -- its parameters from the solved system (as appropriate for
   -- scaled/not scaled).  Use the origin for anything unconstrained.
