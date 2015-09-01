@@ -16,7 +16,8 @@
 
 module Diagrams.TwoD.Layout.Constrained where
 
-import           Control.Lens         hiding ((#))
+import Data.Either (isLeft)
+import           Control.Lens         (makeLenses, at)
 import           Control.Monad.State
 import           Data.Functor         ((<$>))
 import           Data.Hashable
@@ -28,8 +29,7 @@ import           GHC.Generics
 import           Math.MFSolve
 
 import           Diagrams.Coordinates
-import           Diagrams.Prelude     (Monoid (..), Monoid', QDiagram, translate, (#))
-import           Diagrams.TwoD        (P2, V2, unitX, unitY, unit_X, unit_Y)
+import           Diagrams.Prelude     hiding ((===), at)
 import           Linear.Affine
 import           Linear.Vector
 
@@ -57,10 +57,10 @@ diaVar2String (DiaVar h s xy) = show h ++ "_" ++ s ++ "_" ++ show xy
 diaVar :: Handle s -> String -> XY -> DiaVar s
 diaVar = DiaVar
 
-mkDiaVar :: Handle s -> String -> XY -> Expr (DiaVar s) Double
+mkDiaVar :: Num n => Handle s -> String -> XY -> Expr (DiaVar s) n
 mkDiaVar h s xy = makeVariable (diaVar h s xy)
 
-mkDiaPVar :: Handle s -> String -> P2 (Expr (DiaVar s) Double)
+mkDiaPVar :: Num n => Handle s -> String -> P2 (Expr (DiaVar s) n)
 mkDiaPVar h s = mkDiaVar h s X ^& mkDiaVar h s Y
 
 -- s is a phantom parameter, used like with ST
@@ -96,26 +96,27 @@ constrain sys' =
 
 infix 4 =.=
 (=.=)
-  :: (Hashable v, Ord v)
-  => P2 (Expr v Double) -> P2 (Expr v Double) -> System v Double
+  :: (Hashable v, Ord v, Hashable n, Floating n, RealFrac n)
+  => P2 (Expr v n) -> P2 (Expr v n) -> System v n
 (coords -> px :& py) =.= (coords -> qx :& qy) = mkSystem [ px === qx, py === qy ]
 
-intro :: QDiagram b V2 Double m -> Constrained s b Double m (Handle s)
+intro :: QDiagram b V2 n m -> Constrained s b n m (Handle s)
 intro dia = do
   h <- Handle <$> (handleCounter <+= 1)
   diagrams %= (\m -> m & at h .~ Just dia)
   return h
 
-intros :: [QDiagram b V2 Double m] -> Constrained s b Double m [Handle s]
+intros :: [QDiagram b V2 n m] -> Constrained s b n m [Handle s]
 intros = mapM intro
 
-centerAnchor :: Handle s -> P2 (Expr (DiaVar s) Double)
+centerAnchor :: Num n => Handle s -> P2 (Expr (DiaVar s) n)
 centerAnchor h = mkDiaPVar h "center"
 
 newAnchorOn
-  :: Handle s
-  -> (QDiagram b V2 Double m -> P2 Double)
-  -> Constrained s b Double m (P2 (Expr (DiaVar s) Double))
+  :: (Hashable n, Floating n, RealFrac n)
+  => Handle s
+  -> (QDiagram b V2 n m -> P2 n)
+  -> Constrained s b n m (P2 (Expr (DiaVar s) n))
 newAnchorOn h getP = do
   -- the fromJust is justified, because the type discipline on Handles ensures
   -- they will always represent a valid index in the Map.
@@ -129,35 +130,49 @@ newAnchorOn h getP = do
 
   return anchor
 
--- newAnchor :: Constrained s b Double m (P2 (Expr (DiaVar s) Double))
+-- newAnchor :: Constrained s b n m (P2 (Expr (DiaVar s) n))
 -- newAnchor = do
 --   v <- varCounter <+= 1
 --   return $
 
 layout
-  :: (Monoid' m, Ord n, Floating n)
+  :: (Monoid' m, Hashable n, Floating n, RealFrac n, Show n)
   => (forall s. Constrained s b n m a)
   -> QDiagram b V2 n m
 layout constr =
   case (s ^. equations) emptyDeps of
-    Left depError -> square 1 # fc red     -- XXX
-    Right deps    -> mconcat $
-      flip map dias $ \(h, dia) ->
-        case (getKnown deps (diaVar h "center" X), getKnown deps (diaVar h "center" Y)) of
+    Left depError -> error "depError"
+    Right deps    ->
+      let deps' = resolve deps dias
+      in  mconcat . flip map dias $ \(h, dia) ->
+        case getKnownCenter deps' h of
           (Right xval, Right yval) -> dia # translate (xval ^& yval)
-          _ -> square 1 # fc green
+          _ -> error "unknown center"
+
+  -- Check if there are ANY unconstrained center variables.  If there
+  -- are, pick one and set it to the origin.  Repeat.
 
   where
     s = execState constr initConstrainedState
     dias = M.assocs (s ^. diagrams)
+    getKnownCenter deps h
+      = (getKnown deps (diaVar h "center" X), getKnown deps (diaVar h "center" Y))
+    resolve deps dias =
+      case flip filter dias (\(h, _) -> let (x,y) = getKnownCenter deps h in isLeft x || isLeft y) of
+        [] -> deps
+        ((h1,_):_) -> resolve (either (error . show) id (solveEqs deps [centerAnchor h1 =.= origin])) dias
 
-  -- Solve the system, and then for each diagram in the map, look up
-  -- its parameters from the solved system (as appropriate for
-  -- scaled/not scaled).  Use the origin for anything unconstrained.
-  -- Do scales and translates as appropriate, then mconcat everything.
 
+{- TODO:
 
-
+   - introduce scaling as an extra constraint var
+     (Introduce it for all diagrams, but for fixed ones just constrain it to be 1.
+     Then look it up and use it for all diagrams, defaulting to 1.)
+   - Ways to use juxtaposition etc. combinators
+   - Specialize newAnchorOn for common cases (envelope, trace)
+   - shorter name for centerAnchor
+   - better name for intro
+-}
 
 -- introScaled :: QDiagram b V2 n m -> Constrained b n m Handle
 -- introScaled = undefined
@@ -165,14 +180,4 @@ layout constr =
   -- like intro, but put (..., True) in the Map, and introduce an
   -- extra radius variable and use it in constraints between center
   -- and outer points
-
-
--- vertDirs :: Num n => [(String, V2 n)]
--- vertDirs  = [ ("t", unitY),  ("b", unit_Y) ]
--- horizDirs = [ ("l", unit_X), ("r", unitX)  ]
--- dirs = horizDirs ++ vertDirs ++
---      [ (cv++ch, vv ^+^ vh)
---      | (cv,vv) <- vertDirs, (ch,vh) <- horizDirs
---      ]
-
 
