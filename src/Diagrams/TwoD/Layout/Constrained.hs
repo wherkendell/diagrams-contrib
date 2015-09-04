@@ -17,7 +17,8 @@
 module Diagrams.TwoD.Layout.Constrained where
 
 import Data.Either (isLeft)
-import           Control.Lens         (makeLenses, at)
+import           Control.Lens         (makeLenses)
+import qualified Control.Lens as L
 import           Control.Monad.State
 import           Data.Functor         ((<$>))
 import           Data.Hashable
@@ -29,7 +30,7 @@ import           GHC.Generics
 import           Math.MFSolve
 
 import           Diagrams.Coordinates
-import           Diagrams.Prelude     hiding ((===), at)
+import           Diagrams.Prelude     hiding ((===))
 import           Linear.Affine
 import           Linear.Vector
 
@@ -103,7 +104,7 @@ infix 4 =.=
 intro :: QDiagram b V2 n m -> Constrained s b n m (Handle s)
 intro dia = do
   h <- Handle <$> (handleCounter <+= 1)
-  diagrams %= (\m -> m & at h .~ Just dia)
+  diagrams %= (\m -> m & L.at h .~ Just dia)
   return h
 
 intros :: [QDiagram b V2 n m] -> Constrained s b n m [Handle s]
@@ -111,6 +112,12 @@ intros = mapM intro
 
 centerAnchor :: Num n => Handle s -> P2 (Expr (DiaVar s) n)
 centerAnchor h = mkDiaPVar h "center"
+
+centerAnchorX :: Num n => Handle s -> Expr (DiaVar s) n
+centerAnchorX h = mkDiaVar h "center" X
+
+centerAnchorY :: Num n => Handle s -> Expr (DiaVar s) n
+centerAnchorY h = mkDiaVar h "center" Y
 
 newAnchorOn
   :: (Hashable n, Floating n, RealFrac n)
@@ -120,7 +127,7 @@ newAnchorOn
 newAnchorOn h getP = do
   -- the fromJust is justified, because the type discipline on Handles ensures
   -- they will always represent a valid index in the Map.
-  dia <- fromJust <$> use (diagrams . at h)
+  dia <- fromJust <$> use (diagrams . L.at h)
   let p = getP dia
 
   v <- varCounter <+= 1
@@ -158,10 +165,38 @@ layout constr =
     getKnownCenter deps h
       = (getKnown deps (diaVar h "center" X), getKnown deps (diaVar h "center" Y))
     resolve deps dias =
+      -- XXX do something with half-constrained points.
+      -- Partition into constrained, half-constrained, unconstrained.  Prefer fixing
+      -- half-constrained first.
       case flip filter dias (\(h, _) -> let (x,y) = getKnownCenter deps h in isLeft x || isLeft y) of
         [] -> deps
         ((h1,_):_) -> resolve (either (error . show) id (solveEqs deps [centerAnchor h1 =.= origin])) dias
 
+
+constrainWith
+  :: (Hashable n, RealFrac n, Floating n, Ord n, Monoid' m)
+  => -- (forall a. (...) => [a] -> a)
+     ([[Located (Envelope V2 n)]] -> [Located (Envelope V2 n)])
+  -> [Handle s]
+  -> Constrained s b n m ()
+constrainWith f hs = do
+  diaMap <- use diagrams
+  let dias  = map (fromJust . flip M.lookup diaMap) hs
+      envs  = map ((:[]) . (`at` origin) . getEnvelope) dias
+      envs' = f envs
+      ps    = map loc envs'
+      locHs = zip hs ps
+  zipWithM_
+    (\(h1,q1) (h2,q2) ->
+      constrain [centerAnchor h1 .+^ fmap makeConstant (q2 .-. q1) =.= centerAnchor h2]
+    )
+    locHs (tail locHs)
+
+sameX :: (Hashable n, Floating n, RealFrac n) => Handle s -> Handle s -> Constrained s b n m ()
+sameX h1 h2 = constrain [centerAnchorX h1 === centerAnchorX h2]
+
+sameY :: (Hashable n, Floating n, RealFrac n) => Handle s -> Handle s -> Constrained s b n m ()
+sameY h1 h2 = constrain [centerAnchorY h1 === centerAnchorY h2]
 
 {- TODO:
 
@@ -180,4 +215,3 @@ layout constr =
   -- like intro, but put (..., True) in the Map, and introduce an
   -- extra radius variable and use it in constraints between center
   -- and outer points
-
