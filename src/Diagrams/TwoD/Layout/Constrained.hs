@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveGeneric   #-}
 {-# LANGUAGE Rank2Types      #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TupleSections   #-}
 {-# LANGUAGE ViewPatterns    #-}
 
 -----------------------------------------------------------------------------
@@ -16,10 +17,10 @@
 
 module Diagrams.TwoD.Layout.Constrained where
 
-import Data.Either (isLeft)
 import           Control.Lens         (makeLenses)
-import qualified Control.Lens as L
+import qualified Control.Lens         as L
 import           Control.Monad.State
+import           Data.Either          (isLeft)
 import           Data.Functor         ((<$>))
 import           Data.Hashable
 import           Data.Hashable
@@ -27,49 +28,61 @@ import qualified Data.Map             as M
 import           Data.Maybe           (fromJust)
 import           GHC.Generics
 
-import           Math.MFSolve
+import qualified Math.MFSolve         as MFS
 
 import           Diagrams.Coordinates
-import           Diagrams.Prelude     hiding ((===))
+import           Diagrams.Prelude
 import           Linear.Affine
 import           Linear.Vector
 
-type System v n = Dependencies v n -> Either (DepError n) (Dependencies v n)
+-- XXX
+type System v n = MFS.Dependencies v n -> Either (MFS.DepError n) (MFS.Dependencies v n)
 
--- XXX change name 'Handle' to something better
-
--- Don't export Handle constructor.  The only way you can get a Handle is from
+-- Don't export DiaID constructor.  The only way you can get a Handle is from
 -- intro, so we can guarantee that Handles are always valid
-newtype Handle s = Handle Int
+newtype DiaID s = DiaID Int
   deriving (Ord, Eq, Show, Generic)
 
-data XY = X | Y
+data VarType = X   -- ^ X-coordinate of a point
+             | Y   -- ^ Y-coordinate of a point
+             | S   -- ^ scaling factor
+             | L   -- ^ length
   deriving (Eq, Ord, Read, Show, Generic)
-data DiaVar s = DiaVar (Handle s) String XY  -- XXX some vars might not be associated with a diagram!
+
+data Var s = Var (Maybe (DiaID s)) String VarType
   deriving (Eq, Ord, Generic)
 
-instance Hashable (Handle s)
-instance Hashable XY
-instance Hashable (DiaVar s)
+instance Hashable (DiaID s)
+instance Hashable VarType
+instance Hashable (Var s)
 
-diaVar2String :: DiaVar s -> String
-diaVar2String (DiaVar h s xy) = show h ++ "_" ++ s ++ "_" ++ show xy
+var2String :: Var s -> String
+var2String (Var h s ty) = show h ++ "_" ++ s ++ "_" ++ show ty
 
-diaVar :: Handle s -> String -> XY -> DiaVar s
-diaVar = DiaVar
+diaVar :: DiaID s -> String -> VarType -> Var s
+diaVar d = Var (Just d)
 
-mkDiaVar :: Num n => Handle s -> String -> XY -> Expr (DiaVar s) n
-mkDiaVar h s xy = makeVariable (diaVar h s xy)
+newVar :: String -> VarType -> Var s
+newVar = Var Nothing
 
-mkDiaPVar :: Num n => Handle s -> String -> P2 (Expr (DiaVar s) n)
-mkDiaPVar h s = mkDiaVar h s X ^& mkDiaVar h s Y
+mkDVar :: Num n => DiaID s -> String -> VarType -> MFS.Expr (Var s) n
+mkDVar h s ty = MFS.makeVariable (diaVar h s ty)
+
+mkVar :: Num n => String -> VarType -> MFS.Expr (Var s) n
+mkVar s ty = MFS.makeVariable (newVar s ty)
+
+mkDPVar :: Num n => DiaID s -> String -> P2 (MFS.Expr (Var s) n)
+mkDPVar h s = mkDVar h s X ^& mkDVar h s Y
+
+mkPVar :: Num n => String -> P2 (MFS.Expr (Var s) n)
+mkPVar s = mkVar s X ^& mkVar s Y
 
 -- s is a phantom parameter, used like with ST
 data ConstrainedState s b n m = ConstrainedState
-  { _equations     :: System (DiaVar s) n
+  { _equations     :: System (Var s) n
   , _handleCounter :: Int
   , _varCounter    :: Int
-  , _diagrams      :: M.Map (Handle s) (QDiagram b V2 n m)   -- XXX later add Bool for scalable
+  , _diagrams      :: M.Map (DiaID s) (QDiagram b V2 n m)   -- XXX later add Bool for scalable
   }
 
 makeLenses ''ConstrainedState
@@ -85,59 +98,58 @@ initConstrainedState = ConstrainedState
 type Constrained s b n m a = State (ConstrainedState s b n m) a
 
 mkSystem :: [System v n] -> System v n
-mkSystem = flip solveEqs
+mkSystem = flip MFS.solveEqs
 
-constrain :: [System (DiaVar s) n] -> Constrained s b n m ()
+constrain :: [System (Var s) n] -> Constrained s b n m ()
 constrain sys' =
   equations %= mkSystem . (:sys')
-
--- (=.=) :: (Hashable n, RealFrac (Phase n))
---       => P2 (Expr SimpleVar n) -> P2 (Expr SimpleVar n) -> System n
--- can't use the above since Phase is not exported by mfsolve
 
 infix 4 =.=
 (=.=)
   :: (Hashable v, Ord v, Hashable n, Floating n, RealFrac n)
-  => P2 (Expr v n) -> P2 (Expr v n) -> System v n
-(coords -> px :& py) =.= (coords -> qx :& qy) = mkSystem [ px === qx, py === qy ]
+  => P2 (MFS.Expr v n) -> P2 (MFS.Expr v n) -> System v n
+(coords -> px :& py) =.= (coords -> qx :& qy) = mkSystem [ px MFS.=== qx, py MFS.=== qy ]
 
-intro :: QDiagram b V2 n m -> Constrained s b n m (Handle s)
+intro :: QDiagram b V2 n m -> Constrained s b n m (DiaID s)
 intro dia = do
-  h <- Handle <$> (handleCounter <+= 1)
+  h <- DiaID <$> (handleCounter <+= 1)
   diagrams %= (\m -> m & L.at h .~ Just dia)
   return h
 
-intros :: [QDiagram b V2 n m] -> Constrained s b n m [Handle s]
+intros :: [QDiagram b V2 n m] -> Constrained s b n m [DiaID s]
 intros = mapM intro
 
-centerAnchor :: Num n => Handle s -> P2 (Expr (DiaVar s) n)
-centerAnchor h = mkDiaPVar h "center"
+centerAnchor :: Num n => DiaID s -> P2 (MFS.Expr (Var s) n)
+centerAnchor h = mkDPVar h "center"
 
-centerAnchorX :: Num n => Handle s -> Expr (DiaVar s) n
-centerAnchorX h = mkDiaVar h "center" X
+centerAnchorX :: Num n => DiaID s -> MFS.Expr (Var s) n
+centerAnchorX h = mkDVar h "center" X
 
-centerAnchorY :: Num n => Handle s -> Expr (DiaVar s) n
-centerAnchorY h = mkDiaVar h "center" Y
+centerAnchorY :: Num n => DiaID s -> MFS.Expr (Var s) n
+centerAnchorY h = mkDVar h "center" Y
 
 newAnchorOn
   :: (Hashable n, Floating n, RealFrac n)
-  => Handle s
+  => DiaID s
   -> (QDiagram b V2 n m -> P2 n)
-  -> Constrained s b n m (P2 (Expr (DiaVar s) n))
+  -> Constrained s b n m (P2 (MFS.Expr (Var s) n))
 newAnchorOn h getP = do
-  -- the fromJust is justified, because the type discipline on Handles ensures
+  -- the fromJust is justified, because the type discipline on DiaIDs ensures
   -- they will always represent a valid index in the Map.
   dia <- fromJust <$> use (diagrams . L.at h)
   let p = getP dia
 
   v <- varCounter <+= 1
-  let anchor = mkDiaPVar h ("a" ++ show v)
+  let anchor = mkDPVar h ("a" ++ show v)
 
-  constrain [centerAnchor h .+^ (fmap makeConstant (p .-. origin)) =.= anchor]
+  constrain [centerAnchor h .+^ (fmap MFS.makeConstant (p .-. origin)) =.= anchor]
 
   return anchor
 
--- newAnchor :: Constrained s b n m (P2 (Expr (DiaVar s) n))
+-- Have to change format of variables, they might not correspond to a diagram,
+-- or even to points
+
+-- newAnchor :: Constrained s b n m (P2 (MFS.Expr (Var s) n))
 -- newAnchor = do
 --   v <- varCounter <+= 1
 --   return $
@@ -147,13 +159,13 @@ layout
   => (forall s. Constrained s b n m a)
   -> QDiagram b V2 n m
 layout constr =
-  case (s ^. equations) emptyDeps of
+  case (s ^. equations) MFS.emptyDeps of
     Left depError -> error "depError"
     Right deps    ->
-      let deps' = resolve deps dias
+      let deps' = resolve deps
       in  mconcat . flip map dias $ \(h, dia) ->
         case getKnownCenter deps' h of
-          (Right xval, Right yval) -> dia # translate (xval ^& yval)
+          [Right xval, Right yval] -> dia # translate (xval ^& yval)
           _ -> error "unknown center"
 
   -- Check if there are ANY unconstrained center variables.  If there
@@ -163,21 +175,18 @@ layout constr =
     s = execState constr initConstrainedState
     dias = M.assocs (s ^. diagrams)
     getKnownCenter deps h
-      = (getKnown deps (diaVar h "center" X), getKnown deps (diaVar h "center" Y))
-    resolve deps dias =
-      -- XXX do something with half-constrained points.
-      -- Partition into constrained, half-constrained, unconstrained.  Prefer fixing
-      -- half-constrained first.
-      case flip filter dias (\(h, _) -> let (x,y) = getKnownCenter deps h in isLeft x || isLeft y) of
-        [] -> deps
-        ((h1,_):_) -> resolve (either (error . show) id (solveEqs deps [centerAnchor h1 =.= origin])) dias
-
+      = [MFS.getKnown deps (diaVar h "center" X), MFS.getKnown deps (diaVar h "center" Y)]
+    resolve deps =
+      let diaVars = map fst dias >>= \h -> map (h,) (getKnownCenter deps h)
+      in  case filter (isLeft.snd) diaVars of
+            [] -> deps
+            ((h1,_):_) -> resolve (either (error . show) id (MFS.solveEqs deps [h1 MFS.=== 0]))
 
 constrainWith
   :: (Hashable n, RealFrac n, Floating n, Ord n, Monoid' m)
   => -- (forall a. (...) => [a] -> a)
      ([[Located (Envelope V2 n)]] -> [Located (Envelope V2 n)])
-  -> [Handle s]
+  -> [DiaID s]
   -> Constrained s b n m ()
 constrainWith f hs = do
   diaMap <- use diagrams
@@ -188,15 +197,15 @@ constrainWith f hs = do
       locHs = zip hs ps
   zipWithM_
     (\(h1,q1) (h2,q2) ->
-      constrain [centerAnchor h1 .+^ fmap makeConstant (q2 .-. q1) =.= centerAnchor h2]
+      constrain [centerAnchor h1 .+^ fmap MFS.makeConstant (q2 .-. q1) =.= centerAnchor h2]
     )
     locHs (tail locHs)
 
-sameX :: (Hashable n, Floating n, RealFrac n) => Handle s -> Handle s -> Constrained s b n m ()
-sameX h1 h2 = constrain [centerAnchorX h1 === centerAnchorX h2]
+sameX :: (Hashable n, Floating n, RealFrac n) => DiaID s -> DiaID s -> Constrained s b n m ()
+sameX h1 h2 = constrain [centerAnchorX h1 MFS.=== centerAnchorX h2]
 
-sameY :: (Hashable n, Floating n, RealFrac n) => Handle s -> Handle s -> Constrained s b n m ()
-sameY h1 h2 = constrain [centerAnchorY h1 === centerAnchorY h2]
+sameY :: (Hashable n, Floating n, RealFrac n) => DiaID s -> DiaID s -> Constrained s b n m ()
+sameY h1 h2 = constrain [centerAnchorY h1 MFS.=== centerAnchorY h2]
 
 {- TODO:
 
@@ -209,7 +218,7 @@ sameY h1 h2 = constrain [centerAnchorY h1 === centerAnchorY h2]
    - better name for intro
 -}
 
--- introScaled :: QDiagram b V2 n m -> Constrained b n m Handle
+-- introScaled :: QDiagram b V2 n m -> Constrained b n m DiaID
 -- introScaled = undefined
 
   -- like intro, but put (..., True) in the Map, and introduce an
