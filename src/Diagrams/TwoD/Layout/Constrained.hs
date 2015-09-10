@@ -146,13 +146,10 @@ newAnchorOn h getP = do
 
   return anchor
 
--- Have to change format of variables, they might not correspond to a diagram,
--- or even to points
-
--- newAnchor :: Constrained s b n m (P2 (MFS.Expr (Var s) n))
--- newAnchor = do
---   v <- varCounter <+= 1
---   return $
+newAnchor :: Num n => Constrained s b n m (P2 (MFS.Expr (Var s) n))
+newAnchor = do
+  v <- varCounter <+= 1
+  return $ mkPVar ("a"  ++ show v)
 
 layout
   :: (Monoid' m, Hashable n, Floating n, RealFrac n, Show n)
@@ -175,12 +172,19 @@ layout constr =
     s = execState constr initConstrainedState
     dias = M.assocs (s ^. diagrams)
     getKnownCenter deps h
-      = [MFS.getKnown deps (diaVar h "center" X), MFS.getKnown deps (diaVar h "center" Y)]
+      = [MFS.getKnown deps (centerAnchorX h), MFS.getKnown deps (centerAnchorY h)]
     resolve deps =
       let diaVars = map fst dias >>= \h -> map (h,) (getKnownCenter deps h)
       in  case filter (isLeft.snd) diaVars of
             [] -> deps
-            ((h1,_):_) -> resolve (either (error . show) id (MFS.solveEqs deps [h1 MFS.=== 0]))
+            ((h1,_):_) -> resolve (either (const deps {-XXX-}) id (MFS.solveEqs deps [(mkDVar h1 "center" X) MFS.=== MFS.makeConstant 0]))
+      -- XXX getting stuck in a loop above, ignoring
+      -- RedundantConstraint error.  Not sure why we're getting it
+      -- though.  Try to pare down to a minimal example.  The above
+      -- code is also still pretty ugly.  See if we can simplify it at
+      -- all.
+
+      -- Oh, DUH, was always using X instead of getting var type from the var.
 
 constrainWith
   :: (Hashable n, RealFrac n, Floating n, Ord n, Monoid' m)
