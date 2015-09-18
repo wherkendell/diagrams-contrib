@@ -1,0 +1,126 @@
+--
+--
+name:                 swimunit
+version:              0.2.0.262
+stability:            experimental
+synopsis:             Swimunit is a versatile plotting library based on "diagrams".
+description:          Plot in Diagrams
+homepage:             swimunit.herkendell.de (in preparation)
+license:              BSD3
+license-file:         LICENSE
+author:               Wolfram Herkendell
+maintainer:           wolfram@herkendell.de
+copyright:            2015 Wolfram Herkendell
+category:             Sport
+build-type:           Simple
+cabal-version:        >=1.10
+
+
+library
+  ghc-options: -Wall
+  exposed-modules:    Diagrams.Swimunit.Base
+                    , Diagrams.Swimunit.Dotmatrix
+                    , Diagrams.Swimunit.Axis
+                    , Diagrams.Swimunit.Grid
+                    , Diagrams.Swimunit.Plot
+  other-extensions:   NoMonomorphismRestriction
+  build-depends:      base >=4.8 && <4.9
+                    , diagrams-lib >=1.3 && <1.4
+                    , diagrams-svg >=1.3 && <1.4
+                    , containers >=0.5 && <0.6
+  hs-source-dirs:     src
+  default-language:   Haskell2010
+
+
+executable BaseDriver
+  hs-source-dirs:     drv/Diagrams/Swimunit
+  ghc-options:        -Wall -rtsopts
+  default-language:   Haskell2010
+  main-is:            BaseDriver.hs
+  build-depends:      base >= 4
+                    , diagrams-lib >= 1.3
+                    , diagrams-svg >= 1.3
+                    , colour >= 2.3
+                    , containers >= 0.5
+                    , swimunit > 0.2
+
+
+executable DotmatrixDarkAlphabetDriver
+  hs-source-dirs:     drv/Diagrams/Swimunit
+  ghc-options:        -Wall -rtsopts
+  default-language:   Haskell2010
+  main-is:            DotmatrixDarkAlphabetDriver.hs
+  build-depends:      base >= 4
+                    , diagrams-lib >= 1.3
+                    , diagrams-svg >= 1.3
+                    , colour >= 2.3
+                    , containers >= 0.5
+                    , swimunit > 0.2
+
+
+executable DotmatrixModuleNameDriver
+  hs-source-dirs:     drv/Diagrams/Swimunit
+  ghc-options:        -Wall -rtsopts
+  default-language:   Haskell2010
+  main-is:            DotmatrixModuleNameDriver.hs
+  build-depends:      base >= 4
+                    , diagrams-lib >= 1.3
+                    , diagrams-svg >= 1.3
+                    , colour >= 2.3
+                    , containers >= 0.5
+                    , swimunit > 0.2
+
+
+executable SwimunitModuleNameDriver
+  hs-source-dirs:     drv/Diagrams/Swimunit
+  ghc-options:        -Wall -rtsopts
+  main-is:            SwimunitModuleNameDriver.hs
+  default-language:   Haskell2010
+  build-depends:      base >= 4
+                    , diagrams-lib >= 1.3
+                    , diagrams-svg >= 1.3
+                    , colour >= 2.3
+                    , containers >= 0.5
+                    , swimunit > 0.2
+
+
+executable WolframLogoDriver
+  hs-source-dirs:     drv/Diagrams/Swimunit
+  ghc-options:        -Wall -rtsopts
+  main-is:            WolframLogoDriver.hs
+  default-language:   Haskell2010
+  build-depends:      base >= 4
+                    , diagrams-lib >= 1.3
+                    , diagrams-svg >= 1.3
+                    , colour >= 2.3
+                    , containers >= 0.5
+                    , swimunit > 0.2
+
+executable VPlotDriver
+  hs-source-dirs:     drv/Diagrams/Swimunit
+  ghc-options:        -Wall -rtsopts
+  main-is:            VPlotDriver.hs
+  default-language:   Haskell2010
+  build-depends:      base >= 4
+                    , diagrams-lib >= 1.3
+                    , diagrams-svg >= 1.3
+                    , colour >= 2.3
+                    , containers >= 0.5
+                    , swimunit > 0.2
+
+
+executable VGridDriver
+  hs-source-dirs:     drv/Diagrams/Swimunit
+  ghc-options:        -Wall -rtsopts
+  main-is:            VGridDriver.hs
+  default-language:   Haskell2010
+  build-depends:      base >= 4
+                    , diagrams-lib >= 1.3
+                    , diagrams-svg >= 1.3
+                    , colour >= 2.3
+                    , containers >= 0.5
+                    , swimunit > 0.2
+
+ --
+----
+ --
